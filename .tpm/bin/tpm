@@ -1,0 +1,557 @@
+-- Titanium Package Manager
+local args = { ... }
+local WEB_API = "https://tpm-api.herokuapp.com/api/"
+
+local FORCE, MINIFY, SILENT, DEST, DEPENDED, DISPOSABLE, FETCH_ON_INSTALL
+for i = #args, 1, -1 do
+    if args[ i ] == "--force" then FORCE = true
+    elseif args[ i ] == "--minify" then MINIFY = true
+    elseif args[ i ] == "--dest" then
+        DEST = args[ i + 1 ] or error("An argument must follow '--dest' flag", 0)
+        table.remove( args, i + 1 )
+    elseif args[ i ] == "--depend" then
+        DEPENDED = args[ i + 1 ] or error("An argument must follow '--depend' flag", 0)
+        table.remove( args, i + 1 )
+    elseif args[ i ] == "--disposable" then DISPOSABLE = true
+    elseif args[ i ] == "--silent" then SILENT = true
+    elseif args[ i ] == "--fetch" then FETCH_ON_INSTALL = true end
+
+    if args[ i ] == "--silent" or args[ i ] == "--force" or args[ i ] == "--minify" or args[ i ] == "--dest" or args[ i ] == "--depend" or args[ i ] == "--disposable" or args[ i ] == "--fetch" then
+        table.remove( args, i )
+    end
+end
+
+if #args == 0 then
+    error "Arguments required (tpm [flags] <mode> [modeArguments]). See `tpm help` for more information"
+end
+
+-- Credit to https://github.com/Team-CC-Corp/Grin/blob/master/lib/json for this API
+local JSON_API = [[local ba={["\n"]="\\n",["\r"]="\\r",["\t"]="\\t",["\b"]="\\b",["\f"]="\\f",["\""]="\\\"",["\\"]="\\\\"}
+local function ca(cb)local db=0;for _c,ac in pairs(cb)do
+if type(_c)~="number"then return false elseif _c>db then db=_c end end;return db==#cb end
+local da={['\n']=true,['\r']=true,['\t']=true,[' ']=true,[',']=true,[':']=true}
+function removeWhite(cb)while da[cb:sub(1,1)]do cb=cb:sub(2)end;return cb end
+local function _b(cb,db,_c,ac)local bc=""
+local function cc(_d)bc=bc.. ("\t"):rep(_c).._d end
+local function dc(_d,ad,bd,cd,dd)bc=bc..ad;if db then bc=bc.."\n"_c=_c+1 end
+for __a,a_a in cd(_d)do cc("")
+dd(__a,a_a)bc=bc..","if db then bc=bc.."\n"end end;if db then _c=_c-1 end
+if bc:sub(-2)==",\n"then
+bc=bc:sub(1,-3).."\n"elseif bc:sub(-1)==","then bc=bc:sub(1,-2)end;cc(bd)end
+if type(cb)=="table"then
+assert(not ac[cb],"Cannot encode a table holding itself recursively")ac[cb]=true
+if ca(cb)then
+dc(cb,"[","]",ipairs,function(_d,ad)bc=bc.._b(ad,db,_c,ac)end)else
+dc(cb,"{","}",pairs,function(_d,ad)
+assert(type(_d)=="string","JSON object keys must be strings",2)bc=bc.._b(_d,db,_c,ac)bc=bc..
+(db and": "or":").._b(ad,db,_c,ac)end)end elseif type(cb)=="string"then
+bc='"'..cb:gsub("[%c\"\\]",ba)..'"'elseif type(cb)=="number"or type(cb)=="boolean"then
+bc=tostring(cb)else
+error("JSON only supports arrays, objects, numbers, booleans, and strings",2)end;return bc end;function encode(cb)return _b(cb,false,0,{})end;function encodePretty(cb)
+return _b(cb,true,0,{})end;local ab={["\\/"]="/"}
+for cb,db in pairs(ba)do ab[db]=cb end;function parseBoolean(cb)
+if cb:sub(1,4)=="true"then return true,removeWhite(cb:sub(5))else return
+false,removeWhite(cb:sub(6))end end;function parseNull(cb)return nil,
+removeWhite(cb:sub(5))end
+local bb={['e']=true,['E']=true,['+']=true,['-']=true,['.']=true}
+function parseNumber(cb)local db=1;while
+bb[cb:sub(db,db)]or tonumber(cb:sub(db,db))do db=db+1 end
+local _c=tonumber(cb:sub(1,db-1))cb=removeWhite(cb:sub(db))return _c,cb end
+function parseString(cb)cb=cb:sub(2)local db=""local _c=os.clock()
+while cb:sub(1,1)~="\""do if
+os.clock()-_c>4 then _c=os.clock()os.queueEvent""
+os.pullEvent()end;local ac=cb:sub(1,1)cb=cb:sub(2)assert(
+ac~="\n","Unclosed string")if ac=="\\"then
+local bc=cb:sub(1,1)cb=cb:sub(2)
+ac=assert(ab[ac..bc],"Invalid escape character")end;db=db..ac end;return db,removeWhite(cb:sub(2))end
+function parseArray(cb)cb=removeWhite(cb:sub(2))local db={}local _c=1
+while
+cb:sub(1,1)~="]"do local ac=nil;ac,cb=parseValue(cb)db[_c]=ac;_c=_c+1;cb=removeWhite(cb)end;cb=removeWhite(cb:sub(2))return db,cb end
+function parseObject(cb)cb=removeWhite(cb:sub(2))local db={}
+while cb:sub(1,1)~="}"do
+local _c,ac=nil,nil;_c,ac,cb=parseMember(cb)db[_c]=ac;cb=removeWhite(cb)end;cb=removeWhite(cb:sub(2))return db,cb end;function parseMember(cb)local db=nil;db,cb=parseValue(cb)local _c=nil;_c,cb=parseValue(cb)
+return db,_c,cb end
+function parseValue(cb)
+local db=cb:sub(1,1)
+if db=="{"then return parseObject(cb)elseif db=="["then return parseArray(cb)elseif
+tonumber(db)~=nil or bb[db]then return parseNumber(cb)elseif cb:sub(1,4)=="true"or
+cb:sub(1,5)=="false"then return parseBoolean(cb)elseif db=="\""then return
+parseString(cb)elseif cb:sub(1,4)=="null"then return parseNull(cb)end;return nil end
+function decode(cb)cb=removeWhite(cb)t=parseValue(cb)return t end
+function decodeFromFile(cb)local db=assert(fs.open(cb,"r"))
+local _c=decode(db.readAll())db.close()return _c end
+]]
+
+local JSON = setmetatable( {}, { __index = _G } )
+select( 1, load( JSON_API, "JSON_API", "t", JSON ) )()
+
+local function out( text, colour, same, bg )
+    if SILENT then return end
+    term.setTextColour( colour or 1 )
+    term.setBackgroundColour( bg or 32768 )
+
+    if same then write( text ) else print( text ) end
+end
+
+local function exception( msg )
+    error( msg, 0 )
+end
+
+local function reqArguments( start, ex )
+    if #args < start then if ex then return exception( ex .. ( ex:sub( -1 ) ~= "." and "." or "" ) .. " See `tpm help` for more information" ) else return false end end
+
+    local r = {}
+    for i = start, #args do
+        r[ #r + 1 ] = args[ i ]
+    end
+
+    return r
+end
+
+local function httpRequest( url, silent )
+    out("HTTP request sent", 256)
+
+    local h
+    parallel.waitForAny( function()
+        h = http.get( url ) or exception("HTTP request to '"..url.."' failed")
+    end, function()
+        sleep( 10 );
+        ( silent and out or error )( "HTTP request timed out", silent and colours.red or 1 )
+    end )
+
+    if h then
+        out("HTTP response received", colours.lightBlue)
+
+        local information = h.readAll()
+        h.close()
+
+        out("Decoding JSON information", 256)
+        os.queueEvent ""; os.pullEvent()
+
+        local information = JSON.decode( information ) or ( not silent and exception("Failed to decode HTTP response from '"..url.."'") or out( "Failed to decode HTTP response from '"..url.."'", colours.red ) )
+        if type( information ) == "table" then out("Successfully decoded JSON", colours.lightBlue) end
+
+        -- API responses are either SUCCESS ({status: 200, payload: ...}), or FAIL ({status: !200, reason: "..."})
+        -- So, check the status, if 200 OK, then return 'true' and the payload.
+        -- If not 200, return 'false' and the reason (also print a warning if 'silent', or return an exception if not)
+        if( information.status == 200 ) then
+            return true, information.payload
+        end
+
+        (silent and out or error)("Non-OK status code returned: " .. information.status .. "(reason: "..information.reason.."). Request failed.", silent and colours.red or 1)
+        return false, information
+    end
+end
+
+local function isPackageInstalled( name, version )
+    return fs.isDir("/.tpm/packages/"..name) and #fs.list("/.tpm/packages/"..name) > 0 and ( not version or fs.exists( "/.tpm/packages/"..name.."/"..version ) )
+end
+
+local function getPackageExecutables( package )
+    if not isPackageInstalled( package ) then
+        exception("Cannot list executables for package '"..package.."'. Package is not installed")
+    end
+
+    local inDir, files = fs.list( "/.tpm/packages/" .. package ), {}
+    for i = 1, #inDir do
+        files[ #files + 1 ] = inDir[ i ]
+    end
+
+    return files
+end
+
+local function getPackages()
+    local inDir, packages = fs.list "/.tpm/packages", {}
+    for i = 1, #inDir do
+        if isPackageInstalled( inDir[ i ] ) then
+            packages[ #packages + 1 ] = inDir[ i ]
+        end
+    end
+
+    return packages
+end
+
+local function writeToFile( path, content )
+    local h = fs.open( path, "w" )
+    h.write( content )
+    h.close()
+end
+
+local function readFromFile( path )
+    if not fs.exists( path ) then
+        return ""
+    end
+
+    local h = fs.open( path, "r" )
+    local c = h.readAll()
+    h.close()
+
+    return c
+end
+
+local function fetch( mandatory )
+    out("\nFetching TPM packages", colours.orange )
+    local ok, payload = httpRequest( WEB_API  .. "/tags/all", not mandatory )
+
+    if ok then
+        out("Updating cache", 256)
+        writeToFile( "/.tpm/cache", textutils.serialise( payload ) )
+
+        out("TPM package fetch complete, saved to /.tpm/cache", colours.blue)
+    else
+        out("Failed to update TPM cache. SKIPPING cache update", colours.red)
+    end
+end
+
+local tags
+local function fetchFromCache( package, mandatory )
+    if not tags then
+        if not fs.exists "/.tpm/cache" then
+            out("Warning: Cache not found, fetching cache information now", colours.red)
+            fetch( mandatory )
+        end
+
+        tags = textutils.unserialise( readFromFile "/.tpm/cache" )
+    end
+
+    if package == "*" then
+        return tags
+    elseif not tags[ package ] then
+        exception("Could not find package '"..package.."'. Use `tpm fetch` to update package listings.")
+    end
+
+    return tags[ package ]
+end
+
+local function determineVersion( name, version, allowWildcard )
+    out("Fetching tag information from cache", 256)
+
+    local tags = fetchFromCache( name, true )
+    if not version or version == "latest" then
+        version = tags[ 1 ] or exception("No versions available for package '"..name.."'.")
+    elseif allowWildcard and version == "*" then
+        return getPackageExecutables( name )
+    else
+        local found
+        for i = 1, #tags do if tags[ i ] == version then found = true; break end end
+
+        if not found then
+            exception("Invalid version '"..version.."'. Use `tpm versions "..name.."` to see available versions")
+        end
+    end
+
+    return version
+end
+
+local function install( package )
+    local name, version = package:match "(%S+):(%S+)"
+    name = name or package
+
+    out("\nStarting package install for '"..name..( version and "' at version '"..version.."'" or "'" ), colours.orange )
+
+    version = determineVersion( name, version )
+    out("Selected version: "..version, colours.lightBlue)
+    if fs.exists("/.tpm/packages/"..name.."/"..version) then
+        if FORCE then
+            out("Reinstalling package '"..name.."' at version '"..version.."'", colours.red)
+        else
+            out("Package '"..name.."' has already been installed at version '"..version.."'. Skipping", colours.red)
+            return name, version
+        end
+    end
+
+    out("Downloading build data", 256)
+    local ok, payload = httpRequest(WEB_API .. "/builds/"..name.."/"..version .. ( MINIFY and "/minified" or "" ) )
+    if not ok then
+        exception("Failed to fetch build: ("..information.status..")" .. information.reason)
+    elseif not payload then
+        exception "No build attached to JSON response (status 200); Please run `tpm fetch` and report problem if it persists"
+    end
+
+    out("Saving build data to '/.tpm/packages/"..name.."/"..version.."'", 256)
+    writeToFile( "/.tpm/packages/"..name.."/"..version, payload )
+
+    out("Installed package '"..name.."' at version '"..version.."'", colours.blue)
+    return name, version
+end
+
+local function uninstall( package )
+    local name, version = package:match "(%S+):(%S+)"
+    name = name or package
+
+    if not isPackageInstalled( name ) then
+        return out("No versions of '"..name.."' are installed - skipping", colours.red)
+    end
+
+    local function doUninstall( version, wild )
+        out("\nStarting package uninstall for '"..name..( version and "', version '"..version.."'" or "'" ), colours.orange )
+        if not fs.exists("/.tpm/packages/"..name.."/"..version) then
+            if wild then return out("Skipping - already uninstalled", 256) else exception("Cannot uninstall package '"..name.."', version '"..version.."'. Package not installed") end
+        end
+
+        out("Uninstalling version: "..version, colours.lightBlue)
+        out("Removing build data from '/.tpm/packages/"..name.."/"..version.."'", 256)
+        fs.delete("/.tpm/packages/"..name.."/"..version)
+
+        local content = textutils.unserialise( readFromFile "/.tpm/tpm.cfg" )
+        local cfg = content[ name ]
+        if cfg then
+            local relevant = cfg.shortcuts[ version ] or {}
+            for i = 1, #relevant do
+                if ( DEST and relevant[ i ] ~= DEST or not DEST ) and fs.exists( relevant[ i ] ) then fs.delete( relevant[ i ] ) end
+            end
+
+            local newDepends = {}
+            for p, v in pairs( cfg.depends ) do
+                if v ~= version then newDepends[ p ] = v end
+            end
+
+            cfg.depends, cfg.store[ version ], cfg.shortcuts[ version ], cfg.depends = newDepends, nil, nil
+        end
+
+        writeToFile("/.tpm/tpm.cfg", textutils.serialise( content ))
+
+        out("Uninstalled package '"..name.."', version '"..version.."'", colours.blue)
+    end
+
+    version = determineVersion( name, version, true )
+    if type( version ) == "table" then
+        for i = 1, #version do
+            doUninstall( version[ i ], true )
+        end
+    else
+        doUninstall( version )
+    end
+end
+
+local function removeShortcut()
+    if not ( fs.exists( "/.tpm/tpm.cfg" ) and DEST ) then return end
+    local content = textutils.unserialise( readFromFile "/.tpm/tpm.cfg" ) or {}
+    for project, cfg in pairs( content ) do
+        local shortcuts, new = cfg.shortcuts, {}
+        for version, shorts in pairs( shortcuts ) do
+            for i = #shorts, 1, -1 do
+                local short = shorts[ i ]
+                if short == DEST then
+                    fs.delete( short )
+                else
+                    if not new[ version ] then new[ version ] = {} end
+                    table.insert( new[ version ], short )
+                end
+            end
+        end
+
+        cfg.shortcuts = new
+    end
+
+    writeToFile( "/.tpm/tpm.cfg", textutils.serialise( content ) )
+end
+
+local function resolveConfig( project, version )
+    if DEST then removeShortcut() end
+
+    local content = fs.exists "/.tpm/tpm.cfg" and textutils.unserialise( readFromFile "/.tpm/tpm.cfg" ) or {}
+    local config = content[ project ] or { depends = {}, store = {}, shortcuts = {} }
+
+    if DEPENDED then config.depends[ DEPENDED ] = version end
+    if not DISPOSABLE then config.store[ version ] = true end
+    if DEST then
+        local shortcuts = config.shortcuts
+        if not shortcuts[ version ] then shortcuts[ version ] = { DEST }
+        else table.insert( shortcuts[ version ], DEST ) end
+
+        writeToFile( DEST, "-- Created by Titanium Package Manager (Harry Felton/hbomb79)\nif type( shell.run ) ~= 'function' then return error 'Cannot run shortcut because shell API (shell.run) not found' else return shell.run '/.tpm/packages/"..project.."/"..version.."' end" )
+        out("Created shortcut '"..DEST.."'", colours.lightBlue)
+    end
+
+    content[ project ] = config
+    writeToFile( "/.tpm/tpm.cfg", textutils.serialise( content ) )
+    out("Updated package '"..project.."' ("..version..") config", colours.blue)
+end
+
+local function cleanup()
+    out("Attempting to cleanup packages", colours.grey)
+    local pkgs, content = fetchFromCache "*", textutils.unserialise( readFromFile "/.tpm/tpm.cfg" ) or {}
+    if not ( pkgs and content ) then
+        out("Failed to cleanup -- configuration problem detected (running `tpm fetch` may resolve)", colours.red)
+        return
+    end
+
+    for name, versions in pairs( pkgs ) do
+        local cfg, newDepends, req = content[ name ], {}, {}
+        if cfg then
+            for path, v in pairs( cfg.depends ) do
+                if fs.exists( path ) then
+                    newDepends[ path ], req[ v ] = v, true
+                else out("File '"..path.."' missing for '"..name.."', version '"..v.."'. Removing dependency.", 256) end
+            end
+            cfg.depends = newDepends
+            writeToFile( "/.tpm/tpm.cfg", textutils.serialise( content ) )
+
+
+            for i = 1, #versions do
+                local ver = versions[ i ]
+                if not req[ ver ] and not cfg.store[ ver ] and isPackageInstalled( name, ver ) then
+                    uninstall( name .. ":" .. ver )
+                    out("Cleaned up unused package '"..name.."', version '"..ver.."'", 256)
+                end
+            end
+        end
+    end
+end
+
+out( "Titanium Package Manager", colours.purple )
+
+if FETCH_ON_INSTALL then fetch() end
+
+local mode = args[ 1 ]
+if mode == "help" then
+    local parts = {
+        {"Mode: Patch", "patch", "Patchs the system's 'startup' file so that a snippet (2 lines) is added to the top of the file (without loss to user content).\n\nThe snippet adds /.tpm/bin to the system path, allowing the user to use developer commands without typing to full path"},
+        {"Mode: Install", "install <package> [package, ...]", "Installation mode can be used to install packages. Package name can be of format 'name' or 'name:version'. If no version given, defaults to latest"},
+        {"Mode: Fetch", "fetch", "Updates the TPM cache, revealing new packages and versions, allowing installation of those packages"},
+        {"Mode: Versions", "versions [packages, ...]", "Shows the versions of the package names given (or all packages if no packages given) that can be downloaded"},
+        {"Mode: List", "list", "Shows the installed packages on the system"},
+        {"Mode: Uninstall", "uninstall <package> [package, ...]", "Uninstalls packages given (or all packages if no packages given). Like install, package name can be format 'name' or 'name:version'. If no version given, defaults to latest"},
+        {"Mode: Update", "update [path]", "Updates Titanium Package Manager. If no path is given, shell.getRunningProgram will be used to determine the location the data will be saved, and therefore 'shell' must be available in the environment"},
+        {"Flag: Disposable", "--disposable", "Marks the current installation as disposable. The package(s) installed will be removed if all their dependant files are missing"},
+        {"Flag: Destination", "--dest <path>", "Creates a shortcut at the path given pointing to the package installed for easier usage"},
+        {"Flag: Silent", "--silent", "No output to console"},
+        {"Flag: Force", "--force", "Will install a package even if already installed"},
+        {"Flag: Minify", "--minify", "Minified build files will be downloaded if available"},
+        {"Flag: Depend", "--depend <path>", "Marks the current package as being depended on by 'path'. If path is removed, and the package is disposable it will be uninstalled"}
+    }
+
+    out("Help\n", colours.yellow)
+    for i = 1, #parts do
+        local part = parts[ i ]
+        out( part[ 1 ], colours.orange )
+        out( "Usage: tpm " .. part[ 2 ] .. "\n", colours.blue )
+        out( part[ 3 ] .. "\n", 256 )
+
+        local x, y = term.getCursorPos()
+        term.setCursorPos( 1, select( 2, term.getSize() ) )
+        out( "Any key to continue (q to exit)", 1, true )
+
+        if select( 2, os.pullEvent "key" ) == keys.q then sleep() return end
+        term.clearLine()
+        term.setCursorPos( x, y )
+    end
+elseif mode == "install" then
+    local pkgs = reqArguments( 2, "No package names following 'install', use `tpm versions` to see available packages")
+    if DEST then
+        local name, version = install( pkgs[ 1 ] )
+
+        resolveConfig( name, version )
+        if #pkgs > 1 then
+            out("Warning: Only one package can be installed at a time when using a custom destination (--dest path). Skipping other packages", colours.red)
+        end
+    else for p = 1, #pkgs do local p, v = install( pkgs[ p ] ); resolveConfig( p, v ) end end
+elseif mode == "fetch" then
+    fetch()
+elseif mode == "versions" then
+    out("\nAvailable Versions:", colours.orange)
+    local function list( pkg, versions )
+        out( "- " .. pkg, colours.yellow )
+        if #versions == 0 then out("   No versions", colours.red) else
+            out("   Versions:", colours.lightBlue )
+            for i = 1, #versions do
+                out("    " .. versions[ i ])
+            end
+        end
+    end
+
+    local pkgs = reqArguments( 2 )
+    if pkgs and #pkgs > 0 then
+        for i = 1, #pkgs do
+            list( pkgs[ i ], fetchFromCache( pkgs[ i ] ) )
+            if i < #pkgs then out("Press any key to continue", 256); os.pullEvent "key" end
+        end
+    else
+        local packages = fetchFromCache "*"
+        for package, versions in pairs( packages ) do
+            list( package, versions )
+            if next( packages, package ) then out("Press any key to continue", 256); os.pullEvent "key" end
+        end
+    end
+
+    out("\nThis list may be out-of-date. Use `tpm fetch` to update it", colours.yellow)
+elseif mode == "list" then
+    local packages = getPackages()
+    if #packages == 0 then exception "Cannot list packages - no packages installed" end
+
+    out("\nInstalled Packages:", colours.orange)
+    for i = 1, #packages do
+        out( "- " .. packages[ i ], colours.yellow )
+        out("   Versions:", colours.lightBlue )
+
+        local versions = getPackageExecutables( packages[ i ] )
+        for i = 1, #versions do out("    " .. versions[ i ]) end
+
+        if i < #packages then out("Press any key to continue", 256) os.pullEvent "key" end
+    end
+elseif mode == "uninstall" then
+    local targets, suffix = reqArguments( 2 ), ""
+    if not targets then
+        suffix, targets = ":*", {}
+        for name in pairs( fetchFromCache "*" ) do targets[ #targets + 1 ] = name end
+    end
+
+    for i = 1, #targets do uninstall( targets[ i ] .. suffix ) end
+elseif mode == "update" then
+    out("\nUpdating TPM", colours.orange)
+    local name = args[ 2 ]
+    if not name then
+        if not ( type( shell ) == "table" and type( shell.getRunningProgram ) == "function" ) then
+            exception "Cannot update TPM. No path given, and shell.getRunningProgram not accessible. Manually pas the path (second argument)"
+        end
+
+        name = shell.getRunningProgram()
+    end
+
+    local h = http.get("https://gitlab.com/hbomb79/Titanium-Package-Manager/raw/master/tpm") or exception "Failed to update TPM. Couldn't fetch new version"
+    local content = h.readAll()
+    h.close()
+
+    local h = fs.open( name, "w" )
+    h.write( content )
+    h.close()
+    out("\nUpdate complete - Saved to '"..name.."'", colours.blue)
+elseif mode == "patch" then
+    out("Patching startup file to to include path to Titanium Developer Tools (TDT) and TPM",colours.orange)
+    if not fs.exists "startup" then
+        out("No startup file exists, would you like to create one (Y/n)?", colours.red)
+
+        while true do
+            local ev = { os.pullEvent( "key" ) }
+            sleep()
+
+            if ev[ 2 ] == keys.y then
+                fs.open("startup", "w").close()
+                break
+            elseif ev[ 2 ] == keys.n then
+                return
+            end
+        end
+    end
+
+
+    local h = fs.open("startup", "r")
+    local content = h.readAll()
+    h.close()
+
+    local swaps, prefix = { ["["] = "%[", ["]"] = "%]", ["("] = "%(", [")"] = "%)" }, "-- AUTO generated by `tpm patch` [Do not edit]\nshell.setPath( shell.path() .. ':/.tpm/bin' )"
+    if content:match( "^" .. prefix:gsub( ".", swaps ) ) then
+        out("Startup file already patched", colours.blue)
+    else
+        local h = fs.open("startup", "w")
+        h.write( prefix .. "\n" .. content )
+        h.close()
+
+        out("Startup file successfully patched", colours.blue)
+    end
+else
+    error( "Invalid mode '"..tostring( mode ).."'" )
+end
+
+cleanup()

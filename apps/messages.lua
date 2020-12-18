@@ -1,0 +1,5 @@
+
+return {
+	name="Message",
+	icon="fffbbbbbbbbbbbbfff\nffbbbbbbbbbbbbbbff\nfbbbbbbbbbbbbbbbbf\nbbbbbbbbbbbbbbbbbb\nbbbbbbbbbbbbbbbbbb\nbb000000000000bbbb\nbbb000000000000bbb\nbbbb00033333300bbb\nbbbbb0000000000bbb\nbbbbb0033333300bbb\nbbbbb0000000000bbb\nbbbbb0033333000bbb\nbbbbb0000000000bbb\nbbbbbb00000000bbbb\nbbbbbbbbbbbbbbbbbb\nfbbbbbbbbbbbbbbbbf\nffbbbbbbbbbbbbbbff\nfffbbbbbbbbbbbbfff"
+}

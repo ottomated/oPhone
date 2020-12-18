@@ -1,0 +1,635 @@
+--[[
+    Titanium Developer Tools
+    ========================
+
+    Provides an easy to use interface for developers when packaging and distributing programs.
+
+    See `tdt help` for more information.
+]]
+
+local PROJECT_CONFIG = "/.tdt_projects.cfg"
+local TERM_X, TERM_Y = term.getSize()
+
+local args = { ... }
+if #args == 0 then
+    error("Failed to start TDT -- Additional information required. See `tdt help`")
+end
+
+-- If the /.tpm/bin folder is not present, then TPM was not installed correctly. This means that TPM or TDT is not installed in the correct place.
+if not fs.isDir( "/.tpm/bin" ) then
+    error "Failed to start TDT. Please ensure TPM is installed (should have been installed alongside TDT) before trying again. Use pastebin run 5B9k1jZg to reinstall."
+end
+
+-- Define the settings that the 'set' command can use
+local VALID_SETTINGS = {
+    ["output"] = "The output path of the package",
+    ["init"] = "This file will be run when the package is executed",
+    ["minify"] = "Files ending with the `.ti` or `.lua` extension will be minified",
+    ["pre-init"] = "This file will be executed just before loading Titanium. Therefore, this file can used to load Titanium instead of using built-in features",
+    ["titanium-init"] = "This file will be executed just after loading Titanium, and consequently just before loading custom classes. This provides the oppourtunity to load custom classes/packages before loading this packages classes (ie: dependencies)",
+
+    ["block-extract-override"] = "Disallows the package to be extracted to a certain path at execution time",
+
+    ["titanium-minify"] = "Minified Titanium builds will be downloaded if available for the release targeted",
+    ["titanium-silent"] = "Silently installs Titanium, hiding all output from TPM",
+    ["titanium-disable-check"] = "Supresses the error that will occur when packaging class files without -ti. Allows Titanium to be loaded externally",
+
+    ["vfs-disable"] = "Disables the virtual file system",
+    ["vfs-expose-global"] = "The package will allow setting in the raw environment (the environment the package was called in)",
+    ["vfs-preserve-proxy"] = "If this package is run inside another Titanium package, the sandbox environment of that package will be used - instead of using the other packages raw environment",
+    ["vfs-allow-raw-fs-access"] = "Allows access of the raw FS from inside the package via TI_VFS_RAW. Without this flag, the VFS will be returned instead",
+    ["vfs-allow-fs-redirection"] = "Exposes the setVFSFallback function, which can be used to set the file system the VFS will use as it's fallback (defaults to the raw FS). If true is NOT passed as the second argument, no further redirections can be set, blocking further use of the function",
+
+    ["pickle-source"] = "The path given will be executed when the builder is run outside of ComputerCraft and will be used to serialize tables",
+    ["minify-source"] = "The path given will be executed when the builder is run with minify enabled. This file will be used to minify Lua source code"
+}
+
+local ARGUMENT_ACCEPTING = { ["output"] = true, ["init"] = true, ["pre-init"] = true, ["titanium-init"] = true, ["pickle-source"] = true, ["minify-source"] = true }
+
+-- Create the locals for the packagers configuration to reside.
+local OPEN_PROJECT, PROJECTS
+local modes
+
+--[[ Helper Functions ]]--
+
+-- A simple function that outputs text of the desired colour (or 1 if none). If 'noNewline' is true, the line is NOT moved down
+-- allowing for compound text lines
+local function out( text, colour, noNewline )
+    term.setTextColour( colours[ colour ] or 1 )
+
+    if noNewline then write( text ) else print( text ) end
+end
+
+-- Waits for key events, returns 'true' when 'y' is pressed and 'false' when 'n' is pressed
+local function waitForYesPrompt( fn, ... )
+    while true do
+        -- Wait for key events
+        local e = { os.pullEvent "key" }
+        -- Eat the char event that follows
+        os.pullEvent()
+
+        if e[ 2 ] == keys.y then
+            -- If 'y' was pressed, execute the function (if one) and return true
+            if type( fn ) == "function" then
+                fn( ... )
+            end
+
+            return true
+        elseif e[ 2 ] == keys.n then
+            -- If 'n' was pressed, return false
+            return false
+        end
+    end
+end
+
+-- Loads the project configuration from the PROJECT_CONFIG. Stores the active project in 'OPEN_PROJECT', and all others in 'PROJECTS'
+-- If the configuration is not loadable, the user will be prompted to perform a reset.
+local resetConfiguration
+local function loadConfiguration()
+    local h = fs.open( PROJECT_CONFIG, "r" )
+    local c = textutils.unserialise( h.readAll() )
+    h.close()
+
+    if c then
+        -- Unserialisation successful, read the details out into local variables
+        OPEN_PROJECT = c.current_project
+        PROJECTS = c.projects
+    else
+        -- Failure. Unset local variables back to default state and report error to user
+        OPEN_PROJECT, PROJECTS = false, {}
+        out( "Configuration file ("..PROJECT_CONFIG..") has been corrupted - would you like to reset it now?", "red" )
+        resetConfiguration()
+    end
+end
+
+-- Resets the configuration by replacing the file with a table containing a 'projects' key, and a 'current_project' key.
+-- If 'noPrompt', the user will not be prompted before resetting the configuration, and minimal text will be output to the screen.
+function resetConfiguration( noPrompt )
+    if not noPrompt then
+        -- Let the user know the dangers of resetting the configuration
+        out( "\nConfiguration Reset", "orange" )
+        out( "Resetting the configuration is NOT reversible, and will erase ALL non-default configuration for all TDT projects. Do you wish to continue? ", "red", true )
+        out( "(Y/n)", "blue" )
+    end
+
+    if noPrompt or waitForYesPrompt() then
+        -- If the user chooses to proceed (or noPrompt is true), reset the configuration
+        out( "Resetting TDT configuration", "orange" )
+        local h = fs.open( PROJECT_CONFIG, "w")
+        h.write( textutils.serialise { projects = {}, current_project = false } ) -- Write the bare minimum to the config
+        h.close()
+
+        loadConfiguration() -- Config has been saved to file, load the config now to update local variables
+        out( "Success", "green" )
+    end
+end
+
+-- Saves the configuration to file, by serializing a table containing the PROJECTS and OPEN_PROJECT.
+local function saveConfiguration()
+    local h = fs.open( PROJECT_CONFIG, "w" )
+    -- Serialise the TDT projects and the active project, and save to file.
+    h.write(textutils.serialise {
+        projects = PROJECTS,
+        current_project = OPEN_PROJECT
+    })
+    h.close()
+end
+
+-- Closes the current project by simply setting OPEN_PROJECT to false.
+local function closeProject()
+    OPEN_PROJECT = false
+    saveConfiguration()
+end
+
+-- Opens the project specified by 'name'. If the project doesn't exist, an exception will be thrown.
+-- The OPEN_PROJECT value is changed if opening is successful.
+local function openProject( name )
+    if not PROJECTS[ name ] then
+        error("Failed to open project. Doesn't exist")
+    end
+
+    OPEN_PROJECT = name
+    saveConfiguration()
+    out("Opened '"..name.."'", "green")
+end
+
+-- If no project is open, this function will raise an exception. If 'msg' is provided, it is shown (and followed by information on how to open a project)
+local function throwIfNotOpen( msg )
+    if not OPEN_PROJECT then
+        error( ( msg or "Cannot complete action" ) .. " -- No project is open. Open a project using `tdt open`" )
+    end
+end
+
+-- Returns a function that accepts a single argument (path). This path will be added to the opened projects configuration (under the 'target' given)
+-- desc and pre can be provided to alter the success message.
+local function generateAdder( target, desc, pre, ignorePathCheck )
+    return function( path )
+        if not ignorePathCheck and not fs.exists( path ) then
+            error("Failed to add path '"..path.."'. Path doesn't exist")
+        end
+
+        -- Get the open projects' details
+        local CP = PROJECTS[ OPEN_PROJECT ]
+
+        -- If the target table doesn't exist, create it
+        if not CP[ target ] then CP[ target ] = {} end
+
+        -- Set the path given to true inside the target on the project
+        CP[ target ][ path ] = true
+
+        -- Save the configuration and output success info to user
+        saveConfiguration()
+        out( ( pre or "Added" ) .. " '"..path.."' " .. desc, "green")
+    end
+end
+
+-- Returns a function that accepts a single argument (path). This path will be added to the opened projects configuration (under the 'target' given)
+-- desc and pre can be provided to alter the success message.
+local function generateRemover( target, desc, pre )
+    return function( path )
+        -- Get the open projects' details
+        local CP = PROJECTS[ OPEN_PROJECT ]
+
+        if not CP[ target ] then
+            error("Failed to remove path '"..path.."'. Project has no entries for '"..target.."'")
+        end
+
+        CP[ target ][ path ] = nil
+
+        -- Save the configuration and output success info to user
+        saveConfiguration()
+        out( ( pre or "Removed" ) .. " '"..path.."' " .. desc, "green")
+    end
+end
+
+local function build()
+    local CP = PROJECTS[ OPEN_PROJECT ]
+    if not CP.settings.output then
+        error("Failed to build. No output specified. Use `tdt set output <path>` to configure")
+    end
+
+    -- Compile the commands
+    local commands = {}
+
+    -- The 'settings' table contains normal flags, the key name is the same as the flag name used by the packager.
+    for key, value in pairs( CP.settings ) do
+        if value == true then
+            -- If the value is simply 'true', don't pass it as an argument
+            table.insert( commands, ("--%s"):format( key ) )
+        else
+            table.insert( commands, ("--%s=%s"):format( key, value ) )
+        end
+    end
+
+    -- Include the Titanium snippet, and set the version
+    local ti = CP.titanium
+    if ti then
+        table.insert( commands, "--titanium" )
+
+        if ti ~= "latest" then
+            table.insert( commands, "--titanium-version=" .. CP.titanium )
+        end
+    elseif not CP.settings["titanium-disable-check"] then
+        out("WARN: This package is being built WITHOUT Titanium. Do you wish to continue (use `tdt set titanium-disable-check true` to supress this error)? ", "red", true)
+        out("(Y/n)", "blue")
+
+        if not waitForYesPrompt() then out("Aborting", "orange") return end
+    end
+
+    local found
+    -- Iterate over the different settings that contain paths
+    for key, value in pairs { sources = "source", ["class_sources"] = "class-source", ["extract_sources"] = "extract", exclusions = "exclude", ["pattern_exclusions"] = "pattern-exclude", ["class_exclusions"] = "exclude-class-source", ["vfs_exclusions"] = "exclude-vfs", ["extract_exclusions"] = "exclude-extract" } do
+        local v = CP[ key ]
+        if v then
+            for path in pairs( v ) do
+                -- Iterate over each path in this setting, inserting them into the commands table
+                found = true
+                table.insert( commands, ("--%s=%s"):format( value, path ) )
+            end
+        end
+    end
+
+    if not found then
+        error("Failure: Cannot proceed with build, no source files can be found!")
+    end
+
+    if shell.run( "/.tpm/bin/package", unpack( commands ) ) then
+        out("Build Successful", "green")
+        return true
+    else
+        out("Build Failed!", "red")
+    end
+end
+
+-- Define the TDT modes, and their associated function.
+modes = {
+    new = {
+        function( name )
+            -- Project already exists
+            if PROJECTS[ name ] then
+                error("Failed to create new TDT project -- Project with the same name already exists, use `tdt open "..name.."` to open project")
+            end
+
+            -- Create the bare minimum configuration for a project
+            PROJECTS[ name ] = { settings = { output = "titanium-project.tpkg" }; titanium = "latest" }
+            saveConfiguration()
+
+            out("Project created, would you like to open it now?", "green", true)
+            out(" (Y/n)", "blue")
+
+            -- If the user wants to, open the project now
+            waitForYesPrompt( openProject, name )
+        end,
+        1, "<path>", "Creates a new TDT project, allowing (once opened) for project configuration to be changed and reflected in the build (`tdt build`)"
+    },
+    delete = {
+        function( name )
+            if PROJECTS[ name ] then
+                PROJECTS[ name ] = nil
+                OPEN_PROJECT = OPEN_PROJECT ~= name and OPEN_PROJECT or false
+
+                out("Project deleted", "green")
+            else
+                error("Cannot delete project '"..name.."'. Doesn't exist")
+            end
+        end,
+        1, "<projectName>", "Deletes a projects configuration file"
+    },
+    open = {
+        openProject, 1, "<name>", "Opens the project specified by 'name'. If not found, it must be created with `tdt new`. Once opened, many commands can be used to configure the way the project is built"
+    },
+    close = { closeProject, 0, "", "Closes the currently open project" },
+
+    add = { generateAdder( "sources", "as source" ), 1, "<path>", "Adds the path given to the project. If not also added by 'add-class' or 'add-extract', the files inside this path will be accessible via the virtual file system", true },
+    remove = { generateRemover( "sources", "from sources" ), 1, "<path>", "Removes the path given from the project sources", true },
+
+    ["add-class"] = { generateAdder( "class_sources", "as class source" ), 1, "<path>", "", true },
+    ["remove-class"] = { generateRemover( "class_sources", "from class sources" ), 1, "<path>", "Removes the path given from the project's class sources", true },
+
+    ["add-extract"] = { generateAdder( "extract_sources", "as extractable" ), 1, "<path>", "", true },
+    ["remove-extract"] = { generateRemover( "extract_sources", "from extractable sources" ), 1, "<path>", "Removes the path given from the project's extractable sources", true },
+
+    exclude = { generateAdder( "exclusions", "from processing", "Excluded" ), 1, "<path>", "Excludes 'path' from all processing (completely ignored)", true },
+    include = { generateRemover( "exclusions", "in processing", "Included" ), 1, "<path>", "Includes 'path' from all processing if it was previously excluded", true },
+
+    ["exclude-pattern"] = { generateAdder( "pattern_exclusions", "will not be processed", "Paths matching Lua pattern", true ), 1, "<pattern>", "Excludes paths that match the pattern from all processing (completely ignored)", true },
+    ["include-pattern"] = { generateRemover( "pattern_exclusions", "will be processed", "Paths matching Lua pattern" ), 1, "<pattern>", "Includes paths matching pattern if it was previously ignored", true },
+
+    ["exclude-class"] = { generateAdder( "class_exclusions", "from class processing", "Excluded" ), 1, "<path>", "Excludes 'path' from all class processing (only accessible through VFS or, if extracted through FS [see `tdt help add-extract`])", true },
+    ["include-class"] = { generateRemover( "class_exclusions", "in class processing", "Included" ), 1, "<path>", "Includes 'path' in all class processing if it was previously excluded", true },
+
+    ["exclude-vfs"] = { generateAdder( "vfs_exclusions", "from VFS", "Excluded" ), 1, "<path>", "Excludes 'path' from the packages VFS. Only accessible if extracted (see `tdt help add-extract`)", true },
+    ["include-vfs"] = { generateRemover( "vfs_exclusions", "in VFS", "Included" ), 1, "<path>", "Includes 'path' in the packages VFS if it was previously excluded", true },
+
+    ["exclude-extract"] = { generateAdder( "extract_exclusions", "from extraction", "Excluded" ), 1, "<path>", "Excludes 'path' from extraction. Only accessible via VFS (unless loaded as class)", true },
+    ["include-extract"] = { generateRemover( "exclusions", "as extractable", "Included" ), 1, "<path>", "Includes 'path' as extractable if it was previously excluded from extraction", true },
+
+    set = {
+        function( key, value )
+            -- Check if the property we are trying to change actually exists
+            if not VALID_SETTINGS[ key ] then
+                error("Property '"..key.."' is not recognized by the packager")
+            end
+
+            -- Check the value
+            if not value or value == "false" then
+                -- If no value was given, or it is false, unset the property (nil)
+                PROJECTS[ OPEN_PROJECT ].settings[ key ] = nil
+                out("Unset property '"..key.."'", "green")
+
+                return -- We are done here, return so the `out` command later on is not run
+            elseif value == "true" or not ARGUMENT_ACCEPTING[ key ] then
+                -- If the value is true, or it is anything else (at this point, it has to be ~= true and ~= false) AND the flag does NOT accept arguments, handle it here by setting the value to boolean 'true'
+                if ARGUMENT_ACCEPTING[ key ] then
+                    -- If the property accepts a value (requires it), but the user has provided true (simply --example, when the packager want's --example=value), raise an exception
+                    error("Failed to set property '"..key.."'. Property requires a value (cannot be boolean)")
+                end
+
+                -- We are going to change the value here. The flag doesn't accept any values other than true (a true flag is --example, instead of --example=true).
+                PROJECTS[ OPEN_PROJECT ].settings[ key ] = true
+            else
+                -- The value given is fine (the flag accepts custom values)
+                PROJECTS[ OPEN_PROJECT ].settings[ key ] = value
+            end
+
+            -- Let the user know all is well, even if the value has been changed to true in the elseif -- better to not confuse the matter and simply pretend everything is working (the value they give makes no difference, so it is an un-noticeable change).
+            out("Set property '"..key.."' to '"..value.."'", "green")
+        end,
+        1, "<property> [value]", "Sets the property given to the given value. If no value is given, the setting is unset.\n\nSee `tdt help settings` for information regarding the settings you can change", true
+    },
+    view = {
+        function( mode )
+            local CP = PROJECTS[ OPEN_PROJECT ]
+
+            local i = 1
+            local function yield()
+                i = i + 1
+                if i >= TERM_Y then
+                    local x, y = term.getCursorPos()
+                    term.setCursorPos( 1, TERM_Y )
+
+                    os.pullEvent "key"
+
+                    -- Output quit prompt
+                    out( "Any key to continue (q to exit)", "grey", true )
+                    if select( 2, os.pullEvent "key" ) == keys.q then
+                        -- Eat stray char event
+                        os.pullEvent()
+                        return
+                    end
+
+                    -- Restore the old cursor location
+                    term.clearLine()
+                    term.setCursorPos( x, y )
+                end
+            end
+
+            local function pre( t )
+                out("- ", false, true)
+                out( t, "orange", true )
+                out(" ", false, true)
+            end
+
+            if mode and mode ~= "projects" then throwIfNotOpen() end
+            if mode == "settings" then
+                out("Viewing Settings", "purple")
+
+                for name in pairs( VALID_SETTINGS ) do
+                    pre( name )
+
+                    local setting = CP.settings[ name ]
+                    if ARGUMENT_ACCEPTING[ name ] then
+                        out( setting == nil and "unset" or tostring( setting ), setting and "green" or "red" )
+                    else
+                        out( setting and "enabled" or "disabled", setting and "green" or "red" )
+                    end
+
+                    yield()
+                end
+            elseif mode == "exclude" then
+                out("Viewing Exclusions", "purple")
+
+                for _, target in pairs { "exclusions", "vfs_exclusions", "class_exclusions", "extract_exclusions", "pattern_exclusions" } do
+                    if CP[ target ] then
+                        for path in pairs( CP[ target ] ) do
+                            pre( path )
+                            out( target == "exclusions" and "all" or target:match "^%w*", "grey" )
+
+                            yield()
+                        end
+                    end
+                end
+            elseif mode == "source" then
+                out("Viewing Sources", "purple")
+
+                for _, target in pairs { "sources", "class_sources", "extract_sources" } do
+                    if CP[ target ] then
+                        for path in pairs( CP[ target ] ) do
+                            pre( path )
+                            out( target == "sources" and "all" or target:match "^%w*", "grey" )
+
+                            yield()
+                        end
+                    end
+                end
+            elseif mode == "projects" then
+                out("Viewing Projects", "purple")
+
+                for name, _ in pairs( PROJECTS ) do
+                    pre( name )
+                    out( OPEN_PROJECT == name and "open" or "", "green" )
+
+                    yield()
+                end
+            else
+                error("Invalid view mode '"..mode.."'. See `tdt help view` for more information")
+            end
+        end,
+        1, "<mode>", "Allows the user to view project configuration depending on 'mode'. If 'mode' is 'settings', all configured settings are listed.\nIf 'mode' is 'exclude' then all excluded paths are shown.\nIf 'mode' is 'source' then source paths are listed\nIf 'mode' is 'projects', all registered projects are listed\n"
+    },
+    titanium = {
+        function( config )
+            -- Load the TPM cache so we can find the versions of Titanium available.
+            local h = fs.open("/.tpm/cache", "r")
+            local c = textutils.unserialise( h.readAll() )
+            if not c then
+                -- Welp, we cannot check the versions available
+                out("Failed to open cache. Version verification is disabled", "red")
+            end
+
+            local versions = c and c.Titanium or false
+            if config == "false" then
+                -- If the argument is 'false', set titanium to nil (disabled)
+                PROJECTS[ OPEN_PROJECT ].titanium = nil
+                out("Disabled Titanium", "blue")
+            elseif config then
+                -- If the config is not false or nil, the version is checked for validity. If valid (or if cache opening failed), it is set as the Titanium version
+                if versions then
+                    local found
+                    for i = 1, #versions do
+                        if versions[ i ] == config then
+                            -- This version matches the argument (it is a valid version). Set found to true to inidicate this.
+                            found = true
+                            break
+                        end
+                    end
+
+                    -- Not valid
+                    if not found then
+                        out("Titanium version '"..config.."' is invalid", "red")
+                        return
+                    end
+                end
+
+                PROJECTS[ OPEN_PROJECT ].titanium = config
+                out("Enabled Titanium at version '"..config.."'", "blue")
+            else
+                PROJECTS[ OPEN_PROJECT ].titanium = "latest"
+                out("Enabled Titanium at latest version (currently " .. versions[ 1 ] .. ")", "blue")
+            end
+        end,
+        0, "[config]", "Allows the developer to control how Titanium is included in their package.\n\nIf 'config' is 'false', Titanium is disabled, otherwise the provided version of Titanium is downloaded (if available). If 'config' not given, latest version of Titanium is downloaded.", true
+    },
+    build = {
+        build, 0, "", "Builds the project by compiling the command based off of your configuration. The building is done using the Titanium packager, found in '/.tpm/bin/package'", true
+    },
+    run = {
+        function( ... )
+            if not build() then out("Aborting build execution", "red") return end
+
+            out("Running build", "blue")
+            shell.run( PROJECTS[ OPEN_PROJECT ].settings.output, ... )
+            out("Build finished", "blue")
+        end,
+        0, "[arg1, arg2, ...]", "Builds the project using `tdt build`, and executes the build file (at the 'output' setting, configured using `tdt set output`), passing all arguments provided to the package", true
+    },
+    reset = {
+        function() resetConfiguration( false ) end,
+        0, "", "Resets the configuration for TDT, removing ALL configuration for ALL projects. Not reversible."
+    }
+}
+
+local function help( target )
+    out("\nTDT Help", "purple")
+
+    local function iterate( showHelp, ... )
+        showHelp( ... )
+
+        -- Store the old cursor position for restoration later
+        local x, y = term.getCursorPos()
+        term.setCursorPos( 1, TERM_Y )
+
+        -- Output quit prompt
+        out( "Any key to continue (q to exit)", "grey", true )
+        if select( 2, os.pullEvent "key" ) == keys.q then
+            -- Eat stray char event
+            os.pullEvent()
+            return true
+        end
+
+        -- Restore the old cursor location
+        term.clearLine()
+        term.setCursorPos( x, y )
+    end
+
+    if target == "settings" then
+        -- User wants information regarding settings
+        local setting = args[ 2 ]
+        if not setting then
+            out("Execute `tdt help settings <property>` to get help with a specific property\n", "grey")
+        end
+
+        local function showHelp( setting, desc )
+            out( "- " .. setting, "orange")
+            if not ARGUMENT_ACCEPTING[ setting ] then
+                out("Boolean property (true or false)\n", "grey")
+            end
+
+            out( desc .. "\n\n", "lightGrey" )
+        end
+
+        if setting then
+            if not VALID_SETTINGS[ setting ] then
+                error("Failed to show help for setting '"..setting.."'. Setting doesn't exist")
+            end
+
+            showHelp( setting, VALID_SETTINGS[ setting ] )
+        else
+            for name, desc in pairs( VALID_SETTINGS ) do if iterate( showHelp, name, desc ) then break end end
+        end
+    else
+        local function showHelp( target, use, desc )
+            out( ("\n- tdt %s %s\n"):format( target, use or modes[ target ][ 3 ] ), "orange")
+            out( desc or modes[ target ][ 4 ] .. "\n\n", "lightGrey" )
+        end
+
+        if target then
+            showHelp( target )
+        else
+            if iterate( showHelp, "help", "[command]", "Shows help for TDT. If 'command' is provided, only shows help for that command" ) or iterate( showHelp, "settings", "[setting]", "Shows help for all available project settings. If a 'setting' is provided, only shows help for that setting" ) then return end
+            for mode in pairs( modes ) do
+                if iterate( showHelp, mode ) then break end
+            end
+        end
+    end
+end
+
+-- Create the configuration file for our projects if it isn't already there.
+if not fs.exists( PROJECT_CONFIG ) then
+    resetConfiguration( true )
+
+    if args[ 1 ] ~= "help" then
+        out("Hi there! Want to see TDT help before you get going? ", "orange", true)
+        out("(Y/n)", "blue")
+
+        if not waitForYesPrompt( help ) then
+            out("Access help at any time using `tdt help`", "blue")
+        end
+    end
+end
+
+if fs.exists "/.tpm/projects.cfg" then
+    while true do
+        out("A TDT update has changed the file location where your project details are stored (was /.tpm/projects.cfg, now "..PROJECT_CONFIG.."). Would you like to move your configuration? ", "orange", true)
+        out("(Y/n)", "blue")
+
+        if waitForYesPrompt() then
+            if fs.exists( PROJECT_CONFIG ) then fs.delete( PROJECT_CONFIG ) end
+            fs.move( "/.tpm/projects.cfg", PROJECT_CONFIG )
+
+            out("Moved configuration", "green")
+            break
+        else
+            out("Old configuration file will be deleted, continue?", "red", true)
+            out("(Y/n)", "blue")
+
+            if waitForYesPrompt( function() fs.delete "/.tpm/projects.cfg"; out("Deleted configuration", "green") end ) then break end
+        end
+    end
+end
+
+-- Load our configuration so the program is up to date with the projects configuration
+loadConfiguration()
+
+-- Check the selected mode for this execution
+local modeName = table.remove( args, 1 )
+if modeName == "help" then
+    help( args[ 1 ] )
+else
+    local argL = #args
+    for name, mode in pairs( modes ) do
+        if name == modeName then
+            if mode[ 5 ] then throwIfNotOpen() end
+
+            if argL < mode[ 2 ] then
+                error( ("Mode '%s' usage: tdt %s %s"):format( name, modeName, mode[ 3 ] ) )
+            end
+
+            mode[ 1 ]( unpack( args ) )
+            saveConfiguration()
+            return
+        end
+    end
+
+    error("Failed to run TDT -- Mode '"..modeName.."' is invalid")
+end
