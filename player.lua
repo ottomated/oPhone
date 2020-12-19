@@ -12,7 +12,12 @@ local VIDEO = 'vid.covid'
 local file = fs.open(VIDEO, 'rb')
 
 while true do
-	local bufferLength = file.read() + file.read() * 256
+	local low = file.read()
+	if low == nil then
+		file.seek("set", 0)
+		low = file.read()
+	end
+	local bufferLength = low + file.read() * 256
 	local buffer = LibDeflate:DecompressDeflate(file.read(bufferLength))
 	s = surface.load(buffer:sub(49), true)
 	screen:drawSurface(s, 0, 0)
